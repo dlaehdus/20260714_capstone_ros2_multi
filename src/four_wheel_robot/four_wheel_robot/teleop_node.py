@@ -9,6 +9,7 @@
 
 import rclpy                            # ros2 파이썬 클라이언트 라이브러리
 from rclpy.node import Node             # 독립된 노드 사용
+# https://velog.io/@bbolddagu/ROS2-%EB%AA%A8%EB%93%88-%EA%B0%9C%EB%85%90
 from geometry_msgs.msg import Twist     # 로봇 속도 명령을 담는 표준 메세지 타입
 from pynput import keyboard             # 키보드 입력을 감지하고 모니터링 하기 위한 라이브러리
 import tkinter as tk                    # 파이썬에서 GUI를 그리기 위한 라이브러리
@@ -59,6 +60,12 @@ class FourWheelSteeringTeleop(Node):
         self.root.geometry("500x580")
         self.root.resizable(False, False)
         self.create_gui()
+        # [수정/안전 버그] 기존에는 창 우측 상단의 OS 기본 'X' 버튼으로 닫으면
+        # on_closing()이 호출되지 않고 Tk 창만 그냥 사라졌습니다. 이 경우 정지(Twist())
+        # 발행이 되지 않기 때문에, 만약 'w'나 'a' 같은 키를 누른 상태에서 'X'를 눌러
+        # 창을 닫으면 로봇은 마지막으로 발행된 속도 명령을 계속 유지한 채 멈추지 않을
+        # 수 있습니다. 아래 protocol 등록으로 'X' 버튼도 on_closing()을 타도록 통일합니다.
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # 키보드가 눌렸을 때(on_press)와 떼졌을 때(on_release)를 감지하는 백그라운드 리스너를 시작합니다.
         self.listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
@@ -115,6 +122,8 @@ class FourWheelSteeringTeleop(Node):
         self.status_label.pack(pady=30)
 
         ttk.Button(self.root, text="창 닫기 & 정지", command=self.on_closing).pack(pady=10)
+        # [추가] 비상 정지 키 안내
+        ttk.Label(self.root, text="[Space] = 비상 정지", font=("Arial", 10), foreground="gray").pack(pady=2)
 
 # =======================================================================================================================================
 # =                                                          키 입력                                                                     =
@@ -122,6 +131,18 @@ class FourWheelSteeringTeleop(Node):
 
     # 키보드를 누를 때 (on_press)
     def on_press(self, key):
+        # [추가/안전 기능] 스페이스바를 누르면 가속/감속 램프(ramp)를 무시하고
+        # 즉시 목표 속도와 현재 속도를 모두 0으로 만드는 비상 정지 기능을 추가했습니다.
+        # 기존에는 정지하려면 키를 떼고 ang/lin_accel에 따라 서서히 감속될 때까지
+        # 기다려야 했는데, 실사용 로봇에서는 즉각적인 정지 수단이 반드시 필요합니다.
+        if key == keyboard.Key.space:
+            self.keys_pressed.clear()
+            self.target_v = 0.0
+            self.target_w = 0.0
+            self.current_v = 0.0
+            self.current_w = 0.0
+            return
+
         # def on_press(self, key):: 키보드가 눌렸을 때 실행되는 함수입니다. 어떤 키가 눌렸는지 정보가 key 변수로 들어옵니다.
         # try:: 특수키(예: Shift, Ctrl)를 누르면 에러가 발생할 수 있으므로, 에러를 방지하기 위해 예외 처리를 시작합니다.
         try:
@@ -232,11 +253,15 @@ class FourWheelSteeringTeleop(Node):
         self.status_label.config(text=f"눌린 키: {keys_str}   |   동작: {status}")
 
     def on_closing(self):
+        # [수정/버그] 여기서 destroy_node()를 호출하면 main()의 finally 블록에서
+        # 다시 한 번 destroy_node()가 호출되어 이미 destroy된 노드를 또 종료하려다가
+        # 예외가 발생할 수 있었습니다 (이중 종료).
+        # -> 정지 명령 발행 + 리스너 정지 + GUI 종료만 담당하고,
+        #    실제 rclpy 노드 종료는 main()에서 한 번만 수행하도록 정리했습니다.
         stop = Twist()
         self.publisher.publish(stop)
         self.listener.stop()
         self.root.quit()
-        self.destroy_node()
 
 
 def main(args=None):
