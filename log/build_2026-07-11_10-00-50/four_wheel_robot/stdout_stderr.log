@@ -1,0 +1,47 @@
+running egg_info
+creating ../../build/four_wheel_robot/four_wheel_robot.egg-info
+writing ../../build/four_wheel_robot/four_wheel_robot.egg-info/PKG-INFO
+writing dependency_links to ../../build/four_wheel_robot/four_wheel_robot.egg-info/dependency_links.txt
+writing entry points to ../../build/four_wheel_robot/four_wheel_robot.egg-info/entry_points.txt
+writing requirements to ../../build/four_wheel_robot/four_wheel_robot.egg-info/requires.txt
+writing top-level names to ../../build/four_wheel_robot/four_wheel_robot.egg-info/top_level.txt
+writing manifest file '../../build/four_wheel_robot/four_wheel_robot.egg-info/SOURCES.txt'
+reading manifest file '../../build/four_wheel_robot/four_wheel_robot.egg-info/SOURCES.txt'
+writing manifest file '../../build/four_wheel_robot/four_wheel_robot.egg-info/SOURCES.txt'
+running build
+running build_py
+creating /root/ros2_ws/build/four_wheel_robot/build
+creating /root/ros2_ws/build/four_wheel_robot/build/lib
+creating /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+copying four_wheel_robot/steering_driver_node.py -> /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+copying four_wheel_robot/kinematics_node.py -> /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+copying four_wheel_robot/motor_driver_node.py -> /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+copying four_wheel_robot/teleop_node.py -> /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+copying four_wheel_robot/__init__.py -> /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+running install
+running install_lib
+creating /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot
+copying /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot/steering_driver_node.py -> /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot
+copying /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot/kinematics_node.py -> /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot
+copying /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot/motor_driver_node.py -> /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot
+copying /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot/teleop_node.py -> /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot
+copying /root/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot/__init__.py -> /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot
+byte-compiling /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot/steering_driver_node.py to steering_driver_node.cpython-310.pyc
+byte-compiling /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot/kinematics_node.py to kinematics_node.cpython-310.pyc
+byte-compiling /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot/motor_driver_node.py to motor_driver_node.cpython-310.pyc
+byte-compiling /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot/teleop_node.py to teleop_node.cpython-310.pyc
+byte-compiling /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot/__init__.py to __init__.cpython-310.pyc
+running install_data
+creating /root/ros2_ws/install/four_wheel_robot/share/ament_index
+creating /root/ros2_ws/install/four_wheel_robot/share/ament_index/resource_index
+creating /root/ros2_ws/install/four_wheel_robot/share/ament_index/resource_index/packages
+copying resource/four_wheel_robot -> /root/ros2_ws/install/four_wheel_robot/share/ament_index/resource_index/packages
+copying package.xml -> /root/ros2_ws/install/four_wheel_robot/share/four_wheel_robot
+running install_egg_info
+Copying ../../build/four_wheel_robot/four_wheel_robot.egg-info to /root/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot-0.0.0-py3.10.egg-info
+running install_scripts
+Installing kinematics_node script to /root/ros2_ws/install/four_wheel_robot/lib/four_wheel_robot
+Installing motor_driver_node script to /root/ros2_ws/install/four_wheel_robot/lib/four_wheel_robot
+Installing steering_driver_node script to /root/ros2_ws/install/four_wheel_robot/lib/four_wheel_robot
+Installing teleop_node script to /root/ros2_ws/install/four_wheel_robot/lib/four_wheel_robot
+writing list of installed files to '/root/ros2_ws/build/four_wheel_robot/install.log'
