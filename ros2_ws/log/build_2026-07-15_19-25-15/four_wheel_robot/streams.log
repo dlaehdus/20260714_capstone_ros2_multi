@@ -1,0 +1,36 @@
+[0.411s] Invoking command in '/home/limdoyeon/CapstoneDesign/ros2_ws/src/four_wheel_robot': PYTHONPATH=/home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/four_wheel_robot build --build-base /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/build install --record /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/install.log --single-version-externally-managed install_data
+[0.518s] /home/limdoyeon/.local/lib/python3.10/site-packages/setuptools/_distutils/dist.py:289: UserWarning: Unknown distribution option: 'tests_require'
+[0.518s]   warnings.warn(msg)
+[0.591s] running egg_info
+[0.603s] writing ../../build/four_wheel_robot/four_wheel_robot.egg-info/PKG-INFO
+[0.603s] writing dependency_links to ../../build/four_wheel_robot/four_wheel_robot.egg-info/dependency_links.txt
+[0.603s] writing entry points to ../../build/four_wheel_robot/four_wheel_robot.egg-info/entry_points.txt
+[0.604s] writing requirements to ../../build/four_wheel_robot/four_wheel_robot.egg-info/requires.txt
+[0.604s] writing top-level names to ../../build/four_wheel_robot/four_wheel_robot.egg-info/top_level.txt
+[0.628s] reading manifest file '../../build/four_wheel_robot/four_wheel_robot.egg-info/SOURCES.txt'
+[0.629s] writing manifest file '../../build/four_wheel_robot/four_wheel_robot.egg-info/SOURCES.txt'
+[0.629s] running build
+[0.629s] running build_py
+[0.629s] copying four_wheel_robot/steering_driver_node.py -> /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+[0.629s] copying four_wheel_robot/kinematics_node.py -> /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+[0.630s] copying four_wheel_robot/motor_driver_node.py -> /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+[0.630s] copying four_wheel_robot/teleop_node.py -> /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+[0.630s] copying four_wheel_robot/__init__.py -> /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot
+[0.630s] running install
+[0.632s] running install_lib
+[0.645s] copying /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/build/lib/four_wheel_robot/kinematics_node.py -> /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot
+[0.645s] byte-compiling /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot/kinematics_node.py to kinematics_node.cpython-310.pyc
+[0.646s] running install_data
+[0.646s] copying resource/four_wheel_robot -> /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/share/ament_index/resource_index/packages
+[0.646s] copying package.xml -> /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/share/four_wheel_robot
+[0.647s] copying launch/four_wheel_robot.launch.py -> /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/share/four_wheel_robot/launch
+[0.647s] running install_egg_info
+[0.660s] removing '/home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot-0.0.0-py3.10.egg-info' (and everything under it)
+[0.660s] Copying ../../build/four_wheel_robot/four_wheel_robot.egg-info to /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages/four_wheel_robot-0.0.0-py3.10.egg-info
+[0.660s] running install_scripts
+[0.686s] Installing kinematics_node script to /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/four_wheel_robot
+[0.686s] Installing motor_driver_node script to /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/four_wheel_robot
+[0.686s] Installing steering_driver_node script to /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/four_wheel_robot
+[0.686s] Installing teleop_node script to /home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/four_wheel_robot
+[0.686s] writing list of installed files to '/home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/install.log'
+[0.699s] Invoked command in '/home/limdoyeon/CapstoneDesign/ros2_ws/src/four_wheel_robot' returned '0': PYTHONPATH=/home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/limdoyeon/CapstoneDesign/ros2_ws/install/four_wheel_robot/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/four_wheel_robot build --build-base /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/build install --record /home/limdoyeon/CapstoneDesign/ros2_ws/build/four_wheel_robot/install.log --single-version-externally-managed install_data
