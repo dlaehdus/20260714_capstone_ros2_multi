@@ -1,0 +1,6 @@
+[console_scripts]
+kinematics_node = four_wheel_robot.kinematics_node:main
+motor_driver_node = four_wheel_robot.motor_driver_node:main
+steering_driver_node = four_wheel_robot.steering_driver_node:main
+teleop_node = four_wheel_robot.teleop_node:main
+
