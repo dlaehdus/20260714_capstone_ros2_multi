@@ -20,7 +20,7 @@ from launch_ros.actions import Node
 # 두 노드에 동시에 같은 값을 넘겨 값이 어긋날 가능성 자체를 없앴습니다.
 # ⚠️ 실제 주행 전 ZLAC8015D + 감속기 + 바퀴 규격에 맞는 안전한 최대 rpm인지 반드시 확인하세요.
 # =====================================================================================
-MAX_WHEEL_RPM = 5.0
+MAX_WHEEL_RPM = 100.0
 
 def generate_launch_description():
     return LaunchDescription([
@@ -51,10 +51,10 @@ def generate_launch_description():
                 {'track_width': 0.58719},
                 # [수정/4:1 기어비 반영] 조향 감속기 장착으로 중앙값과 최대조향 틱 오프셋 변경
                 # steering_driver_node.py의 INITIAL_POSITION과 반드시 동일해야 합니다.
-                {'dxl_center': 30720},
+                {'dxl_center': 2048},  # 30720
                 {'steer_min_deg': -45.0},
                 {'steer_max_deg': 45.0},
-                {'max_steer_ticks': 4096.0},        # 45도(steer_max_deg)에서의 틱 오프셋 (4:1 기어비 반영)
+                {'max_steer_ticks': 512.0},        #4096.0 45도(steer_max_deg)에서의 틱 오프셋 (4:1 기어비 반영)
                 {'max_wheel_rpm': MAX_WHEEL_RPM},   # motor_driver_node와 동일 값 공유 (핵심 수정)
             ]
         ),

@@ -29,7 +29,8 @@ TORQUE_DISABLE = 0
 # [수정/4:1 기어비 반영] 조향 감속기가 4:1로 바뀌면서 kinematics_node의 dxl_center와
 # 동일하게 중앙(정면) 값을 2048 -> 30720 으로 변경했습니다.
 # (반드시 kinematics_node의 'dxl_center' 파라미터 값과 같아야 합니다.)
-INITIAL_POSITION = 30720 # 초기 위치 값 (조향 중앙, 4:1 기어비 반영)
+INITIAL_POSITION = 2048
+
 
 class SteeringDriverNode(Node):
     def __init__(self):
@@ -140,9 +141,13 @@ class SteeringDriverNode(Node):
             if i < len(angles):
                 goal_pos = int(angles[i])
                 
-                comm_result, error = self.packet_handler.write4ByteTxRx(
-                    self.port_handler, dxl_id, ADDR_GOAL_POSITION, goal_pos
-                )
+                try:
+                    comm_result, error = self.packet_handler.write4ByteTxRx(
+                        self.port_handler, dxl_id, ADDR_GOAL_POSITION, goal_pos
+                    )
+                except Exception as e:
+                    self.get_logger().warn(f"[ID:{dxl_id}] Goal Position 전송 중 예외: {e}")
+                    continue
                 
                 if comm_result != COMM_SUCCESS:
                     self.get_logger().error(f"[ID:{dxl_id}] Goal Position 통신 실패: {self.packet_handler.getTxRxResult(comm_result)} | 목표각: {goal_pos}")
@@ -156,33 +161,33 @@ class SteeringDriverNode(Node):
     # 3초 Watchdog 체크
     # =========================================================
     def watchdog_check(self):
-        time_diff = (self.get_clock().now() - self.last_msg_time).nanoseconds / 1e9
-        # [수정/가장 치명적인 버그] 원래 333.0으로 되어 있었습니다. 주석과 로그 메시지는
-        # "3초"라고 되어 있지만 실제로는 약 5분 33초가 지나야 안전 동작(중앙 복귀)이
-        # 실행되었습니다. 즉 kinematics_node나 teleop_node가 죽거나 통신이 끊겨도
-        # steering_angles가 마지막으로 받은 값 그대로 5분 넘게 유지된 채 로봇이 계속
-        # 주행하게 되는 매우 위험한 상태였습니다. 3.0으로 수정합니다.
-        if time_diff > 3.0 and not self.watchdog_triggered:
-            # [수정] 로그 메시지에 하드코딩된 "12285"는 실제 INITIAL_POSITION(2048)과
-            # 다른 값이라 디버깅 시 혼란을 줄 수 있어 실제 변수 값을 출력하도록 수정
-            self.get_logger().error(f"⚠️ [Watchdog] 3초간 데이터 없음: 초기 위치({INITIAL_POSITION})로 복귀합니다.")
-            for dxl_id in self.dxl_ids:
-                self.packet_handler.write4ByteTxRx(self.port_handler, dxl_id, ADDR_GOAL_POSITION, INITIAL_POSITION)
-            self.watchdog_triggered = True
+        try:
+            time_diff = (self.get_clock().now() - self.last_msg_time).nanoseconds / 1e9
+            if time_diff > 3.0 and not self.watchdog_triggered:
+                self.get_logger().error(f"⚠️ [Watchdog] 3초간 데이터 없음: 초기 위치({INITIAL_POSITION})로 복귀합니다.")
+                for dxl_id in self.dxl_ids:
+                    self.packet_handler.write4ByteTxRx(self.port_handler, dxl_id, ADDR_GOAL_POSITION, INITIAL_POSITION)
+                self.watchdog_triggered = True
+        except Exception as e:
+            self.get_logger().warn(f"Watchdog 처리 중 예외: {e}")
 
     # =========================================================
     # 안전 종료
     # =========================================================
     def destroy_node(self):
-        self.get_logger().info("노드 종료: 모터를 초기화 위치로 이동 후 토크를 해제합니다.")
-        for dxl_id in self.dxl_ids:
-            # 초기 위치 이동
-            self.packet_handler.write4ByteTxRx(self.port_handler, dxl_id, ADDR_GOAL_POSITION, INITIAL_POSITION)
-            # 토크 해제
-            self.packet_handler.write1ByteTxRx(self.port_handler, dxl_id, ADDR_TORQUE_ENABLE, TORQUE_DISABLE)
-        
-        self.port_handler.closePort()
-        super().destroy_node()
+        try:
+            self.get_logger().info("노드 종료: 모터를 초기화 위치로 이동 후 토크를 해제합니다.")
+            for dxl_id in self.dxl_ids:
+                self.packet_handler.write4ByteTxRx(self.port_handler, dxl_id, ADDR_GOAL_POSITION, INITIAL_POSITION)
+                self.packet_handler.write1ByteTxRx(self.port_handler, dxl_id, ADDR_TORQUE_ENABLE, TORQUE_DISABLE)
+        except Exception as e:
+            self.get_logger().warn(f"노드 종료 중 예외: {e}")
+        finally:
+            try:
+                self.port_handler.closePort()
+            except Exception:
+                pass
+            super().destroy_node()
 
 def main(args=None):
     rclpy.init(args=args)
@@ -196,9 +201,14 @@ def main(args=None):
         pass
     except RuntimeError as e:
         print(f"[steering_driver_node] 치명적 오류로 종료합니다: {e}")
+    except Exception as e:
+        print(f"[steering_driver_node] 예기치 않은 오류로 종료합니다: {e}")
     finally:
         if node is not None:
-            node.destroy_node()
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
         rclpy.shutdown()
 
 if __name__ == "__main__":

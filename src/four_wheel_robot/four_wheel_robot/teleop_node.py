@@ -11,6 +11,7 @@ import rclpy                            # ros2 파이썬 클라이언트 라이�
 from rclpy.node import Node             # 독립된 노드 사용
 # https://velog.io/@bbolddagu/ROS2-%EB%AA%A8%EB%93%88-%EA%B0%9C%EB%85%90
 from geometry_msgs.msg import Twist     # 로봇 속도 명령을 담는 표준 메세지 타입
+from std_msgs.msg import Int32          # 제어 모드 정보를 전달하기 위한 메시지 타입
 from pynput import keyboard             # 키보드 입력을 감지하고 모니터링 하기 위한 라이브러리
 import tkinter as tk                    # 파이썬에서 GUI를 그리기 위한 라이브러리
 from tkinter import ttk                 # 파이썬에서 GUI를 그리기 위한 라이브러리
@@ -44,15 +45,19 @@ class FourWheelSteeringTeleop(Node):
 
         self.publisher = self.create_publisher(Twist, 'cmd_vel', 10)    # cmd_vel이라는 이름의 토픽으로 Twist 메시지를 쏘는 발행자(Publisher)를 만듭니다
                                                                         # 메시지를 보관할 대기줄의 칸을 최대 10개로 제한
+        self.mode_pub = self.create_publisher(Int32, 'control_mode', 10) # 제어 모드 토픽 발행자
 
         # 속도 변수
         # current: 로봇의 현재 속도 (가속/감속이 반영되는 중인 값)
         # target: 사용자가 키보드를 눌러 도달하고 싶은 목표 속도
         self.current_v = 0.0        # linear.x
         self.current_w = 0.0        # angular.z
+        self.current_y = 0.0        # linear.y (모드 2용)
         self.target_v = 0.0
         self.target_w = 0.0
+        self.target_y = 0.0
         self.keys_pressed = set()   # 현재 어떤 키가 눌려 있는지 중복 없이 저장하는 집합(set)입니다.
+        self.current_mode = 1       # 1: Ackermann, 2: Crab, 3: Spin
         
         # Tkinter를 이용해 가로 900, 세로 580 크기의 창을 띄웁니다. 크기 조절은 안 되게 고정
         self.root = tk.Tk()
@@ -68,11 +73,11 @@ class FourWheelSteeringTeleop(Node):
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # 키보드가 눌렸을 때(on_press)와 떼졌을 때(on_release)를 감지하는 백그라운드 리스너를 시작합니다.
-        self.listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
+        self.listener = keyboard.Listener(on_press=self._safe_on_press, on_release=self._safe_on_release)
         self.listener.start()
-        # 1초에 50번(1.0 / 50.0 = 0.02초)씩 주기적으로 update 함수를 실행하는 타이머입니다.
-        self.timer = self.create_timer(1.0 / self.rate, self.update)
-        self.get_logger().info("4축 조향 로봇 Teleop 시작 (linear.y = 0 고정)")
+        self.update_period_ms = max(10, int(1000.0 / self.rate))
+        self.publish_mode()
+        self.get_logger().info("4축 조향 로봇 Teleop 시작 (1: Ackermann, 2: Crab, 3: Spin)")
 
 # =======================================================================================================================================
 # =                                                          GUI 창                                                                     =
@@ -119,15 +124,29 @@ class FourWheelSteeringTeleop(Node):
 
         # 상태 표시
         self.status_label = ttk.Label(self.root, text="눌린 키: -   |   동작: 정지", font=("Arial", 12), foreground="blue")
-        self.status_label.pack(pady=30)
+        self.status_label.pack(pady=20)
+        self.mode_label = ttk.Label(self.root, text="모드: Ackermann", font=("Arial", 12), foreground="green")
+        self.mode_label.pack(pady=5)
 
         ttk.Button(self.root, text="창 닫기 & 정지", command=self.on_closing).pack(pady=10)
         # [추가] 비상 정지 키 안내
-        ttk.Label(self.root, text="[Space] = 비상 정지", font=("Arial", 10), foreground="gray").pack(pady=2)
+        ttk.Label(self.root, text="[1] Ackermann / [2] Crab / [3] Spin / [Space] 비상정지", font=("Arial", 10), foreground="gray").pack(pady=2)
 
 # =======================================================================================================================================
 # =                                                          키 입력                                                                     =
 # =======================================================================================================================================
+
+    def _safe_on_press(self, key):
+        try:
+            self.on_press(key)
+        except Exception as e:
+            self.get_logger().warn(f"키 입력 처리 중 예외(press): {e}")
+
+    def _safe_on_release(self, key):
+        try:
+            self.on_release(key)
+        except Exception as e:
+            self.get_logger().warn(f"키 입력 처리 중 예외(release): {e}")
 
     # 키보드를 누를 때 (on_press)
     def on_press(self, key):
@@ -139,35 +158,49 @@ class FourWheelSteeringTeleop(Node):
             self.keys_pressed.clear()
             self.target_v = 0.0
             self.target_w = 0.0
+            self.target_y = 0.0
             self.current_v = 0.0
             self.current_w = 0.0
+            self.current_y = 0.0
             return
 
         # def on_press(self, key):: 키보드가 눌렸을 때 실행되는 함수입니다. 어떤 키가 눌렸는지 정보가 key 변수로 들어옵니다.
         # try:: 특수키(예: Shift, Ctrl)를 누르면 에러가 발생할 수 있으므로, 에러를 방지하기 위해 예외 처리를 시작합니다.
         try:
-            # k = key.char.lower(): 사용자가 누른 알파벳 문자를 추출하고(char), 대문자로 입력되더라도 모두 소문자(lower())로 통일하여 변수 k에 담습니다.
-            k = key.char.lower()
-            # if k in ['w', 's', 'a', 'd']:: 누른 키가 우리가 조종에 쓸 w, s, a, d 중 하나인지 확인합니다.
-            if k in ['w', 's', 'a', 'd']:
-                # self.keys_pressed.add(k): 해당 키를 집합(set)에 추가합니다. (예: w를 누르면 집합은 {'w'}가 됨)
-                self.keys_pressed.add(k)
-                # self.update_target(): 키가 눌렸으니 목표 속도를 새로 계산하라고 명령합니다.
-                self.update_target()
-        except:
-            pass
+            if key is None:
+                return
+            if hasattr(key, 'char') and key.char is not None:
+                k = key.char.lower()
+                if k in ['1', '2', '3']:
+                    self.current_mode = int(k)
+                    self.keys_pressed.clear()
+                    self.target_v = 0.0
+                    self.target_w = 0.0
+                    self.target_y = 0.0
+                    self.current_v = 0.0
+                    self.current_w = 0.0
+                    self.current_y = 0.0
+                    self.publish_mode()
+                    return
+                if k in ['w', 's', 'a', 'd']:
+                    self.keys_pressed.add(k)
+                    self.update_target()
+            else:
+                self.get_logger().debug(f"특수 키 입력: {key}")
+        except Exception as e:
+            self.get_logger().warn(f"키 입력 처리 중 예외: {e}")
 
     # 키보드에서 손을 뗄 때 (on_release)
     def on_release(self, key):
         try:
-            k = key.char.lower()
-            # self.keys_pressed.discard(k): 손을 뗀 키(k)를 집합에서 안전하게 제거합니다.
-            # discard()는 지우려는 키가 집합에 없더라도 에러를 내지 않는 안전한 명령어입니다.
-            self.keys_pressed.discard(k)
-            # self.update_target(): 키에서 손을 뗐으니 목표 속도를 다시 0으로 줄이거나 바꾸기 위해 계산을 요청합니다.
-            self.update_target()
-        except:
-            pass
+            if key is None:
+                return
+            if hasattr(key, 'char') and key.char is not None:
+                k = key.char.lower()
+                self.keys_pressed.discard(k)
+                self.update_target()
+        except Exception as e:
+            self.get_logger().warn(f"키 해제 처리 중 예외: {e}")
 
 # =======================================================================================================================================
 # =                                                          입력값 발행                                                                  =
@@ -177,22 +210,50 @@ class FourWheelSteeringTeleop(Node):
     def update_target(self):
         v = 0.0                         # 임시 선속도(x)를 0.0으로 초기화합니다.
         w = 0.0                         # 임시 각속도(z)를 0.0으로 초기화합니다.
-        # w가 있으면: 전진하므로 최대 속도(max_v)를 더합니다.
-        # s가 있으면: 후진하므로 최대 속도(max_v)만큼 뺍니다.
-        # a가 있으면: 좌회전하므로 최대 회전각(max_w)을 더합니다.
-        # d가 있으면: 우회전하므로 최대 회전각(max_w)만큼 뺍니다.
-        if 'w' in self.keys_pressed:
-            v += self.max_v
-        if 's' in self.keys_pressed:
-            v -= self.max_v
-        if 'a' in self.keys_pressed:
-            w += self.max_w
-        if 'd' in self.keys_pressed:
-            w -= self.max_w
-        # 계산된 임시 값들을 클래스의 진짜 목표 속도 변수(self.target_v, self.target_w)에 덮어씁니다.
+        y = 0.0                         # 임시 측면 속도(y)를 0.0으로 초기화합니다.
+
+        if self.current_mode == 1:
+            # w/s: 전진/후진, a/d: 회전
+            if 'w' in self.keys_pressed:
+                v += self.max_v
+            if 's' in self.keys_pressed:
+                v -= self.max_v
+            if 'a' in self.keys_pressed:
+                w += self.max_w
+            if 'd' in self.keys_pressed:
+                w -= self.max_w
+        elif self.current_mode == 2:
+            # w/s: 전진/후진, a/d: 좌/우 측면 이동
+            if 'w' in self.keys_pressed:
+                v += self.max_v
+            if 's' in self.keys_pressed:
+                v -= self.max_v
+            if 'a' in self.keys_pressed:
+                y -= self.max_v
+            if 'd' in self.keys_pressed:
+                y += self.max_v
+        else:
+            # a/d: 제자리 회전
+            if 'a' in self.keys_pressed:
+                w += self.max_w
+            if 'd' in self.keys_pressed:
+                w -= self.max_w
+
+        # 계산된 임시 값들을 클래스의 진짜 목표 속도 변수에 덮어씁니다.
         self.target_v = v
         self.target_w = w
+        self.target_y = y
 
+
+    def _tk_update_loop(self):
+        try:
+            rclpy.spin_once(self, timeout_sec=0.001)
+            self.update()
+        except Exception as e:
+            self.get_logger().warn(f"Teleop loop error: {e}")
+        finally:
+            if self.root is not None and self.root.winfo_exists():
+                self.root.after(self.update_period_ms, self._tk_update_loop)
 
     # 실시간 주기적 업데이트 (update)
     # 이 함수는 타이머에 의해 1초에 50번씩 자동으로 계속 실행됩니다.
@@ -201,26 +262,33 @@ class FourWheelSteeringTeleop(Node):
         # self.rate가 50이면 dt는 1.0 / 50.0 = 0.02초입니다.
         dt = 1.0 / self.rate
 
-        # Ramp (부드러운 가속/감속) _ramp(...): 현재 속도에서 목표 속도로 한 걸음씩 다가갑니다.
-        # self.lin_accel * dt: 가속도에 0.02초를 곱해 한 걸음의 크기를 정합니다.
-        # 예를 들어, 현재 0.0이고 목표가 1.0이라면, 한 번에 1.0이 되는 게 아니라 가속도 폭에 맞춰 0.04 -> 0.08 -> 0.12 ... 이런 식으로 부드럽게 증가
-        self.current_v = self._ramp(self.current_v, self.target_v, self.lin_accel * dt)
-        self.current_w = self._ramp(self.current_w, self.target_w, self.ang_accel * dt)
+        try:
+            self.current_v = self._ramp(self.current_v, self.target_v, self.lin_accel * dt)
+            self.current_w = self._ramp(self.current_w, self.target_w, self.ang_accel * dt)
+            self.current_y = self._ramp(self.current_y, self.target_y, self.lin_accel * dt)
 
-        # Twist 메시지 생성 및 발행
-        # twist = Twist(): ROS 2로 발행할 새로운 Twist 메시지 상자를 하나 만듭니다
-        twist = Twist()
-        # twist.linear.x = ...: 부드럽게 가속이 계산된 current_v와 current_w를 각각 알맞은 축에 집어넣습니다.
-        twist.linear.x = self.current_v
-        twist.linear.y = 0.0
-        twist.linear.z = 0.0
-        twist.angular.x = 0.0
-        twist.angular.y = 0.0
-        twist.angular.z = self.current_w
-        # self.publisher.publish(twist): 이 메시지를 cmd_vel 토픽을 통해 로봇에게 실제로 쏩니다.
-        self.publisher.publish(twist)
-        # GUI 업데이트
-        self.root.after(0, self.update_gui, twist)
+            twist = Twist()
+            twist.linear.x = self.current_v
+            twist.linear.y = self.current_y
+            twist.linear.z = 0.0
+            twist.angular.x = 0.0
+            twist.angular.y = 0.0
+            twist.angular.z = self.current_w
+            self.publisher.publish(twist)
+
+            if self.root is not None and self.root.winfo_exists():
+                self.root.after(0, self._safe_update_gui, twist)
+        except Exception as e:
+            self.get_logger().error(f"Teleop update 중 예외: {e}")
+            self.current_v = 0.0
+            self.current_w = 0.0
+            self.current_y = 0.0
+            self.target_v = 0.0
+            self.target_w = 0.0
+            self.target_y = 0.0
+            self.keys_pressed.clear()
+            stop = Twist()
+            self.publisher.publish(stop)
 
 # =======================================================================================================================================
 # =                                                          계산부                                                                      =
@@ -237,20 +305,33 @@ class FourWheelSteeringTeleop(Node):
         else:
             return max(current - step, target)
 
-    # GUI 화면 새로고침 (update_gui)
-    def update_gui(self, twist):
-        # 화면에 떠 있는 라벨의 글자를 변경하는 Tkinter 명령어입니다.
-        self.label_lx.config(text=f"linear.x  : {twist.linear.x:7.3f} m/s")
-        self.label_ly.config(text=f"linear.y  : {twist.linear.y:7.3f} m/s")
-        self.label_lz.config(text=f"linear.z  : {twist.linear.z:7.3f} m/s")
-        self.label_az.config(text=f"angular.z : {twist.angular.z:7.3f} rad/s")
+    def _safe_update_gui(self, twist):
+        try:
+            if self.root is None or not self.root.winfo_exists():
+                return
+            self.label_lx.config(text=f"linear.x  : {twist.linear.x:7.3f} m/s")
+            self.label_ly.config(text=f"linear.y  : {twist.linear.y:7.3f} m/s")
+            self.label_lz.config(text=f"linear.z  : {twist.linear.z:7.3f} m/s")
+            self.label_az.config(text=f"angular.z : {twist.angular.z:7.3f} rad/s")
 
-        keys_str = ''.join(sorted(self.keys_pressed)) if self.keys_pressed else "-"
-        status = "전진" if twist.linear.x > 0.05 else "후진" if twist.linear.x < -0.05 else "정지"
-        if abs(twist.angular.z) > 0.05:
-            status += " + 회전"
+            mode_name = {1: "Ackermann", 2: "Crab", 3: "Spin"}.get(self.current_mode, "Unknown")
+            self.mode_label.config(text=f"모드: {mode_name}")
 
-        self.status_label.config(text=f"눌린 키: {keys_str}   |   동작: {status}")
+            keys_str = ''.join(sorted(self.keys_pressed)) if self.keys_pressed else "-"
+            status = "전진" if twist.linear.x > 0.05 else "후진" if twist.linear.x < -0.05 else "정지"
+            if abs(twist.angular.z) > 0.05:
+                status += " + 회전"
+            if abs(twist.linear.y) > 0.05:
+                status += " + 측면"
+
+            self.status_label.config(text=f"눌린 키: {keys_str}   |   동작: {status}")
+        except Exception as e:
+            self.get_logger().warn(f"GUI 업데이트 중 예외: {e}")
+
+    def publish_mode(self):
+        msg = Int32()
+        msg.data = self.current_mode
+        self.mode_pub.publish(msg)
 
     def on_closing(self):
         # [수정/버그] 여기서 destroy_node()를 호출하면 main()의 finally 블록에서
@@ -268,15 +349,14 @@ def main(args=None):
     rclpy.init(args=args)
     node = FourWheelSteeringTeleop()
 
-    def ros_spin():
-        rclpy.spin(node)
-
-    thread = threading.Thread(target=ros_spin, daemon=True)
-    thread.start()
-
     try:
+        node.root.after(node.update_period_ms, node._tk_update_loop)
         node.root.mainloop()
     finally:
+        try:
+            node.listener.stop()
+        except Exception:
+            pass
         node.destroy_node()
         rclpy.shutdown()
 

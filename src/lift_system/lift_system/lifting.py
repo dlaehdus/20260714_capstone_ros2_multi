@@ -131,7 +131,7 @@ def execute_macro(link: Link, dev_id: int, direction_cw: bool):
     global is_running
     is_running = True  # 중복 실행 방지 락(Lock) 활성화
     
-    speed_rpm = 6500.0
+    speed_rpm = 6000.0
     duration_sec = 40.0
     
     speed_raw = int(speed_rpm * 10)
@@ -175,7 +175,7 @@ def main():
         old_settings = termios.tcgetattr(fd)
         tty.setcbreak(sys.stdin.fileno())
 
-    PORT = "/dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BCD9B6ABCD-if06"
+    PORT = '/dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BCD9D7ABCD-if02'
     DEV_ID = 0
 
     link = Link(LinkConfig(port=PORT))

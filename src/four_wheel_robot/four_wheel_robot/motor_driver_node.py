@@ -1,359 +1,233 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-=================================
-원본 대비 개선 사항:
-  [안전]
-    - 드라이버 하드웨어 워치독(0x2000, Communication offline time) 명시적 설정
-      -> ROS 프로세스가 죽어도 드라이버 자체가 통신 끊김을 감지해 정지
-    - 초기화 시 fault(알람) clear 후 enable (이전 알람 잔존 문제 방지)
-    - 목표 속도 범위 클리핑 (-3000 ~ 3000 rpm, 매뉴얼 기준)
-    - 런타임 중 주기적 에러코드(0x20A5/0x20A6) 모니터링
-  [통신 신뢰성]
-    - 포트 연결 실패 시에도 masters 리스트 슬롯을 유지 (인덱스 밀림 버그 수정)
-    - Modbus 타임아웃을 1.0s -> 0.1s 로 단축 (콜백 블로킹 방지)
-    - 예외 처리 범위 확장 (ModbusError 뿐 아니라 SerialException 등 포함)
-  [데이터 정합성]
-    - wheel_speeds 배열 길이가 기대값과 다르면 전체 명령 무시 + 경고
-  [구조]
-    - 포트/ID/baudrate/watchdog 시간 등을 ROS2 파라미터로 노출
+# 터미널에 아래 코드로 실험해보면 됌
+# ros2 topic pub --once /wheel_speeds std_msgs/msg/Float32MultiArray "{data: [50.0, -50.0]}"
+# ros2 topic pub --once /wheel_speeds std_msgs/msg/Float32MultiArray "{data: [50.0, -50.0, 50.0, -50.0]}"
 
-[추가 리뷰 수정 사항]
-  - (치명적) MAX_RPM 하드코딩이 5였던 버그 수정 -> max_wheel_rpm 파라미터로 변경,
-    kinematics_node와 launch 파일에서 같은 값을 공유하도록 통일
-  - max_wheel_rpm이 ZLAC 매뉴얼 절대 한계치(3000)를 넘지 않도록 2중 클램프 추가
-  - 에러코드가 여러 비트 동시에 켜져도 전부 읽을 수 있도록 디코딩 로직 개선
-  - _clamp_rpm을 truncation(int())에서 반올림(round())으로 변경
+# ros2 run four_wheel_robot motor_driver_node
 
-터미널 테스트 예시:
-  ros2 topic pub --once /wheel_speeds std_msgs/msg/Float32MultiArray "{data: [50.0, -50.0, 50.0, -50.0]}"
-  ros2 run four_wheel_robot motor_driver_node
-"""
-
-import time
-
+# ROS통신 관련 라이브러리
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Int32
 
+# 모터 통신관련 라이브러리
 import serial
 import modbus_tk
 import modbus_tk.defines as cst
 from modbus_tk import modbus_rtu
 
-
-# ===================== 레지스터 주소 (ZLAC8015D 매뉴얼 기준) =====================
-REG_OFFLINE_TIME   = 0x2000   # 드라이버 자체 하드웨어 통신 워치독 (ms)
-REG_CONTROL_MODE   = 0x200D
-REG_CONTROL_WORD   = 0x200E   # 0x05 quick stop, 0x06 clear fault, 0x07 stop, 0x08 enable
-REG_TARGET_VEL     = 0x2088   # L, R 연속 2 레지스터
-REG_ERROR_L        = 0x20A5
-REG_ERROR_R        = 0x20A6
-
-CTRL_CLEAR_FAULT = 0x06
-CTRL_STOP        = 0x07
-CTRL_ENABLE      = 0x08
-MODE_VELOCITY    = 0x03
-
-# [수정/치명적 버그] 기존 코드는 MAX_RPM = 5 로 하드코딩되어 있었습니다.
-# 주석에는 "매뉴얼상 속도모드 목표속도 범위 -3000~3000 r/min" 이라고 적혀 있지만
-# 실제 값은 5였기 때문에, kinematics_node가 ±100 스케일로 보내는 wheel_speeds가
-# _clamp_rpm()에서 전부 ±5로 뭉개져 사실상 로봇이 거의 움직이지 못하는 상태였습니다
-# (두 노드가 서로 다른 스케일을 쓰고 있었던 것이 근본 원인).
-# -> ROS2 파라미터 'max_wheel_rpm'으로 바꾸고, kinematics_node의 동일 이름 파라미터와
-#    launch 파일에서 같은 값을 공유하도록 하여 두 노드의 속도 스케일을 통일했습니다.
-# ABSOLUTE_MAX_RPM은 ZLAC8015D 매뉴얼상 속도모드의 물리적 절대 한계치이며,
-# max_wheel_rpm 파라미터를 실수로 과도하게 높게 설정해도 이 값을 넘지 않도록 하는
-# 2중 안전장치입니다. (실제 주행 전 반드시 감속기/바퀴 규격에 맞는 안전한 rpm으로 검증할 것)
-ABSOLUTE_MAX_RPM = 3000
-
-ERROR_MESSAGES = {
-    0x0000: "정상", 0x0001: "과전압", 0x0002: "저전압", 0x0004: "과전류",
-    0x0008: "과부하", 0x0010: "전류추종오류", 0x0020: "위치추종오류",
-    0x0040: "속도추종오류", 0x0080: "기준전압오류", 0x0100: "EEPROM오류",
-    0x0200: "홀센서오류", 0x0400: "모터과온",
-}
-
+# 통신속도
+BAUDRATE = 115200
 
 class MotorDriverNode(Node):
     def __init__(self):
         super().__init__('motor_driver_node')
 
-        # ================= ROS2 파라미터 (launch/yaml에서 오버라이드 가능) =================
-        self.declare_parameter('ports', [
-            '/dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BCD9D7ABCD-if00',
-            '/dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BCD9D7ABCD-if06',
-        ])
-        self.declare_parameter('driver_ids', [1, 1])
-        self.declare_parameter('baudrate', 115200)
-        self.declare_parameter('modbus_timeout_sec', 0.1)      # 통신 응답 타임아웃
-        self.declare_parameter('watchdog_timeout_sec', 3.0)    # 소프트웨어 워치독 (2중 안전장치)
-        self.declare_parameter('driver_offline_time_ms', 1000) # 드라이버 하드웨어 워치독
-        self.declare_parameter('acc_time_ms', 500)
-        self.declare_parameter('dec_time_ms', 500)
-        # [수정] kinematics_node와 동일한 이름/의미의 파라미터. launch 파일에서 반드시
-        # kinematics_node의 max_wheel_rpm과 같은 값을 넣어줘야 속도 스케일이 맞습니다.
-        self.declare_parameter('max_wheel_rpm', 100.0)
+        # =========================================================
+        # 확장성을 위한 포트 설정 배열
+        # 사용할 포트와 해당 포트에 연결된 드라이버의 ID(보통 1)를 적어줍니다
+        # 나중에 바퀴가 추가되면 여기에 포트만 쉼표로 계속 추가하면 됩니다
+        # =========================================================
+        self.driver_configs = [ # ls -l /dev/serial/by-id/
+            # 전륜 구동 모터 드라이버 (Quad Serial의 첫 번째 채널 예시)
+            
+            {'port': '/dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BCD9D7ABCD-if00', 'id': 1},
+            
+            # 후륜 구동 모터 드라이버가 추가된다면 아래와 같이 추가 (if02 등)
+            {'port': '/dev/serial/by-id/usb-WCH.CN_USB_Quad_Serial_BCD9D7ABCD-if06', 'id': 1},
+        ]
 
-        ports = self.get_parameter('ports').value
-        ids = self.get_parameter('driver_ids').value
-        self.baudrate = self.get_parameter('baudrate').value
-        self.modbus_timeout = self.get_parameter('modbus_timeout_sec').value
-        self.watchdog_timeout = self.get_parameter('watchdog_timeout_sec').value
-        self.offline_time_ms = self.get_parameter('driver_offline_time_ms').value
-        self.acc_ms = self.get_parameter('acc_time_ms').value
-        self.dec_ms = self.get_parameter('dec_time_ms').value
-
-        # [수정] 파라미터 값이 하드웨어 절대 한계치(ABSOLUTE_MAX_RPM)를 넘지 못하도록 2중 클램프
-        configured_max = abs(float(self.get_parameter('max_wheel_rpm').value))
-        self.max_rpm = min(configured_max, ABSOLUTE_MAX_RPM)
-        if configured_max > ABSOLUTE_MAX_RPM:
-            self.get_logger().warn(
-                f"max_wheel_rpm({configured_max})이 하드웨어 절대 한계치({ABSOLUTE_MAX_RPM})를 "
-                f"초과하여 {self.max_rpm}(으)로 제한합니다."
-            )
-
-        if len(ports) != len(ids):
-            self.get_logger().error("ports와 driver_ids 파라미터 길이가 다릅니다. 종료합니다.")
-            raise RuntimeError("ports/driver_ids length mismatch")
-
-        self.driver_configs = [{'port': p, 'id': i} for p, i in zip(ports, ids)]
-
-        # masters: 연결 성공/실패와 관계없이 driver_configs와 항상 같은 길이/순서를 유지
-        # (포트 하나가 실패해도 나머지 포트의 인덱스가 밀리지 않도록 하기 위함)
+        # 생성된 Modbus Master 객체들을 저장할 리스트
         self.masters = []
+
+        # 각 포트마다 독립적인 통신 객체(Master)를 생성하고 초기화합니다.
         for config in self.driver_configs:
-            self.masters.append(self._connect_and_init(config))
+            port_name = config['port']
+            d_id = config['id']
+            try:
+                # 1. 시리얼 포트 열기
+                ser = serial.Serial(port=port_name, baudrate=BAUDRATE, bytesize=8, parity='N', stopbits=1, xonxoff=0)
+                
+                # 2. Modbus 마스터 생성
+                master = modbus_rtu.RtuMaster(ser)
+                master.set_timeout(1.0)
+                master.set_verbose(False)
+                
+                # 3. 드라이버 초기 세팅 (속도 제어 모드, 모터 Enable)
+                self.control_mode(master, d_id, 0x03)
+                self.control_word(master, d_id, 0x08)
+                
+                # 4. 성공한 마스터 객체를 리스트에 저장
+                self.masters.append({'config': config, 'master': master})
+                self.get_logger().info(f"포트 연결 및 초기화 성공: {port_name} (ID: {d_id})")
 
-        connected = sum(1 for m in self.masters if m['master'] is not None)
-        self.get_logger().info(f"드라이버 {connected}/{len(self.masters)}개 연결 및 초기화 완료")
+            except Exception as e:
+                self.get_logger().error(f"포트 연결 실패 [{port_name}]: {e}")
 
-        # Subscriber
+        # Subcriber: kinematics_node에서 발행하는 [속도1, 속도2, ...] 배열 수신
         self.subscription = self.create_subscription(
-            Float32MultiArray, 'wheel_speeds', self.speed_callback, 10
+            Float32MultiArray,
+            'wheel_speeds', 
+            self.speed_callback,
+            10
+        )
+        self.safety_subscription = self.create_subscription(
+            Int32,
+            'control_mode',
+            self.control_mode_callback,
+            10
         )
 
-        # 소프트웨어 워치독 (드라이버 하드웨어 워치독의 2중 안전장치)
+        # 3초 동안 메시지 미수신 감지를 위한 타이머와 마지막 수신 시간
         self.last_speed_time = self.get_clock().now()
-        self.motor_stopped = False
-        self.no_command_timer = self.create_timer(0.5, self.check_no_command)
+        self.no_command_timer = self.create_timer(0.5, self.check_no_command)  # 0.5초마다 체크
+        self.motor_stopped = False  # 모터가 정지 상태인지 여부
+        self.emergency_stop = False
 
-        # 런타임 에러코드 모니터링 (1초 주기)
-        self.fault_monitor_timer = self.create_timer(1.0, self.check_faults)
-
-        self.get_logger().info("motor_driver_node 대기 중")
+        self.get_logger().info("motor_driver_node 다중 포트 모드 대기 중")
 
     # =========================================================
-    # 연결 + 초기화 (포트 1개 단위)
+    # Modbus 제어 함수들 (이제 특정 master 객체를 인자로 받음)
     # =========================================================
-    def _connect_and_init(self, config):
-        """성공하면 {'config':..., 'master':master} 반환,
-        실패해도 {'config':..., 'master':None} 을 반환해서 인덱스 정합성을 유지한다."""
-        port_name, d_id = config['port'], config['id']
-        entry = {'config': config, 'master': None}
+    def control_mode(self, master, driver_id, mode):
         try:
-            ser = serial.Serial(port=port_name, baudrate=self.baudrate,
-                                 bytesize=8, parity='N', stopbits=1, xonxoff=0)
-            master = modbus_rtu.RtuMaster(ser)
-            master.set_timeout(self.modbus_timeout)
-            master.set_verbose(False)
-
-            # 1. 드라이버 하드웨어 워치독 설정 (ROS 프로세스가 죽어도 살아있는 안전장치)
-            master.execute(d_id, cst.WRITE_SINGLE_REGISTER,
-                            REG_OFFLINE_TIME, output_value=self.offline_time_ms)
-
-            # 2. 이전 알람(fault) 클리어 -> 그 다음 모드/enable 설정
-            master.execute(d_id, cst.WRITE_SINGLE_REGISTER,
-                            REG_CONTROL_WORD, output_value=CTRL_CLEAR_FAULT)
-            time.sleep(0.05)
-
-            master.execute(d_id, cst.WRITE_SINGLE_REGISTER,
-                            REG_CONTROL_MODE, output_value=MODE_VELOCITY)
-            master.execute(d_id, cst.WRITE_SINGLE_REGISTER,
-                            0x2080, output_value=self.acc_ms)  # Acc(Left)
-            master.execute(d_id, cst.WRITE_SINGLE_REGISTER,
-                            0x2081, output_value=self.acc_ms)  # Acc(Right)
-            master.execute(d_id, cst.WRITE_SINGLE_REGISTER,
-                            0x2082, output_value=self.dec_ms)  # Dec(Left)
-            master.execute(d_id, cst.WRITE_SINGLE_REGISTER,
-                            0x2083, output_value=self.dec_ms)  # Dec(Right)
-            master.execute(d_id, cst.WRITE_SINGLE_REGISTER,
-                            REG_CONTROL_WORD, output_value=CTRL_ENABLE)
-
-            entry['master'] = master
-            self.get_logger().info(f"포트 연결 및 초기화 성공: {port_name} (ID:{d_id})")
-        except Exception as e:
-            # ModbusError뿐 아니라 SerialException 등 통신 관련 예외를 모두 포괄
-            self.get_logger().error(f"포트 연결 실패 [{port_name}]: {e}")
-        return entry
-
-    # =========================================================
-    # 저수준 제어 헬퍼
-    # =========================================================
-    def _to_u16(self, v):
-        return v + 0x10000 if v < 0 else v
-
-    def _clamp_rpm(self, v):
-        # [수정] 모듈 상수 MAX_RPM(=5) 대신 파라미터 기반 self.max_rpm 사용.
-        # 또한 int(v)는 항상 0 방향으로 잘라내는 truncation이라 작은 속도 명령이
-        # 실제보다 더 많이 깎이는 경향이 있어 round()로 반올림하도록 수정.
-        clamped = max(-self.max_rpm, min(self.max_rpm, v))
-        return int(round(clamped))
+            master.execute(driver_id, cst.WRITE_SINGLE_REGISTER, 0x200D, output_value=mode)
+        except modbus_tk.modbus.ModbusError as e:
+            self.get_logger().error(f"Mode Set 에러: {e}")
 
     def control_word(self, master, driver_id, word):
         try:
-            master.execute(driver_id, cst.WRITE_SINGLE_REGISTER,
-                            REG_CONTROL_WORD, output_value=word)
-        except Exception as e:
+            master.execute(driver_id, cst.WRITE_SINGLE_REGISTER, 0x200E, output_value=word)
+        except modbus_tk.modbus.ModbusError as e:
             self.get_logger().error(f"Control Word 에러: {e}")
 
     def speed_mode_speed_set_sync(self, master, driver_id, speed_l, speed_r):
-        speed_l = self._clamp_rpm(speed_l)
-        speed_r = self._clamp_rpm(speed_r)
         try:
-            master.execute(driver_id, cst.WRITE_MULTIPLE_REGISTERS, REG_TARGET_VEL,
-                            output_value=[self._to_u16(speed_l), self._to_u16(speed_r)])
-        except Exception as e:
-            self.get_logger().error(f"Sync Speed 에러 (ID:{driver_id}): {e}")
+            master.execute(driver_id, cst.WRITE_MULTIPLE_REGISTERS, 0x2088, output_value=[speed_l, speed_r])
+        except modbus_tk.modbus.ModbusError as e:
+            self.get_logger().error(f"Sync Speed 에러: {e}")
 
     # =========================================================
-    # 속도 명령 콜백
+    # 콜백 함수 (속도 데이터 수신 시 실행)
     # =========================================================
+    def control_mode_callback(self, msg):
+        if int(msg.data) == 0:
+            self.emergency_stop = True
+            self.stop_motors()
+        else:
+            self.emergency_stop = False
+
     def speed_callback(self, msg):
-        speeds = msg.data
-        expected_len = len(self.masters) * 2
-
-        # 배열 길이가 안 맞으면 일부만 처리하지 말고 전체를 무시 (부분 반영 시 궤적 왜곡 방지)
-        if len(speeds) != expected_len:
-            self.get_logger().warn(
-                f"wheel_speeds 길이 불일치: 수신 {len(speeds)}개, 기대 {expected_len}개 -> 명령 무시"
-            )
+        if self.emergency_stop:
             return
+
+        # msg.data 형태: [1번바퀴, 2번바퀴, 3번바퀴, 4번바퀴...]
+        speeds = msg.data
 
         self.last_speed_time = self.get_clock().now()
 
+        # 정지 상태였다면 다시 Enable
         if self.motor_stopped:
-            self.get_logger().info("명령 수신 재개: 모터 재-enable")
+            self.get_logger().info("wheel_speeds 메시지 수신 재개: 모터를 다시 Enable 합니다.")
             for m_info in self.masters:
-                if m_info['master'] is None:
-                    continue
-                self.control_word(m_info['master'], m_info['config']['id'], CTRL_ENABLE)
+                try:
+                    master = m_info['master']
+                    d_id = m_info['config']['id']
+                    self.control_word(master, d_id, 0x08)  # Enable
+                except Exception as e:
+                    self.get_logger().error(f"모터 Enable 실패: {e}")
             self.motor_stopped = False
 
+        # 연결된 각 마스터(포트)마다 2개씩 속도 데이터를 잘라서 보냄
         for i, m_info in enumerate(self.masters):
-            if m_info['master'] is None:
-                continue  # 연결 안 된 포트는 스킵 (인덱스는 그대로 유지됨)
+            idx = i * 2 # 0, 2, 4... 인덱스
+            
+            if idx + 1 < len(speeds):
+                speed_L = int(speeds[idx])
+                speed_R = int(speeds[idx + 1])
+                
+                master = m_info['master']
+                d_id = m_info['config']['id']
+                port_name = m_info['config']['port']
 
-            idx = i * 2
-            speed_L = speeds[idx]
-            speed_R = speeds[idx + 1]
-
-            self.speed_mode_speed_set_sync(
-                m_info['master'], m_info['config']['id'], speed_L, speed_R
-            )
+                # 해당 포트로 명령 전송
+                self.speed_mode_speed_set_sync(master, d_id, speed_L, speed_R)
+                # 디버깅용 출력이 필요하면 아래 주석 해제
+                # self.get_logger().info(f"[{port_name}] 명령 전송: L={speed_L}, R={speed_R}")
+            else:
+                self.get_logger().warn(f"수신된 속도 데이터가 부족합니다.")
 
     # =========================================================
-    # 소프트웨어 워치독 (드라이버 하드웨어 워치독의 2중 안전장치)
+    # 3초 동안 속도 명령 미수신 시 모터 정지 기능
     # =========================================================
-    def check_no_command(self):
-        now = self.get_clock().now()
-        diff = (now - self.last_speed_time).nanoseconds / 1e9
-
-        if diff > self.watchdog_timeout and not self.motor_stopped:
-            self.get_logger().warn(
-                f"{self.watchdog_timeout}초 동안 명령 없음 -> 전체 정지"
-            )
-            for m_info in self.masters:
-                if m_info['master'] is None:
-                    continue
+    def stop_motors(self):
+        for m_info in self.masters:
+            try:
                 master = m_info['master']
                 d_id = m_info['config']['id']
                 self.speed_mode_speed_set_sync(master, d_id, 0, 0)
-                self.control_word(master, d_id, CTRL_STOP)
-            self.motor_stopped = True
-
-    # =========================================================
-    # [수정] 에러코드 비트 디코딩 (여러 에러가 동시에 발생해도 전부 표시)
-    # 기존에는 ERROR_MESSAGES.get(err, hex(err))로 단일 값만 조회했기 때문에,
-    # 예를 들어 과전압(0x0001)+과전류(0x0004)가 동시에 나서 0x0005가 되면
-    # 사전에 없는 값이라 그냥 "0x5"로만 찍혀서 원인 파악이 어려웠습니다.
-    # =========================================================
-    def _decode_error_bits(self, code):
-        if code == 0:
-            return "정상"
-        msgs = [msg for bit, msg in ERROR_MESSAGES.items() if bit != 0 and (code & bit)]
-        return " + ".join(msgs) if msgs else hex(code)
-
-    # =========================================================
-    # 런타임 에러코드 모니터링
-    # =========================================================
-    def check_faults(self):
-        for m_info in self.masters:
-            if m_info['master'] is None:
-                continue
-            master = m_info['master']
-            d_id = m_info['config']['id']
-            port_name = m_info['config']['port']
-            try:
-                err_l = master.execute(d_id, cst.READ_HOLDING_REGISTERS,
-                                        REG_ERROR_L, quantity_of_x=1)[0]
-                err_r = master.execute(d_id, cst.READ_HOLDING_REGISTERS,
-                                        REG_ERROR_R, quantity_of_x=1)[0]
-                if err_l != 0 or err_r != 0:
-                    self.get_logger().error(
-                        f"[{port_name}] 드라이버 에러 감지! "
-                        f"L: {self._decode_error_bits(err_l)}, "
-                        f"R: {self._decode_error_bits(err_r)}"
-                    )
+                self.control_word(master, d_id, 0x07)  # Disable
             except Exception as e:
-                self.get_logger().error(f"[{port_name}] 에러코드 조회 실패: {e}")
+                self.get_logger().error(f"모터 정지 명령 전송 실패: {e}")
+        self.motor_stopped = True
+
+    def check_no_command(self):
+        now = self.get_clock().now()
+        diff = (now - self.last_speed_time).nanoseconds / 1e9  # 초 단위
+
+        if diff > 3.0 and not self.motor_stopped and not self.emergency_stop:
+            self.get_logger().warn("3초 동안 wheel_speeds 메시지를 수신하지 못했습니다. 모든 모터를 정지합니다.")
+            self.stop_motors()
 
     # =========================================================
-    # 초기 연결 확인 (진단용)
+    # 연결 확인 함수 (통신 문제 / ID 문제 구별)
     # =========================================================
     def check_motor_connection(self):
         self.get_logger().info("모터 연결 상태 확인을 시작합니다...")
         for m_info in self.masters:
-            port_name = m_info['config']['port']
-            if m_info['master'] is None:
-                self.get_logger().error(f"[{port_name}] 연결되지 않음 (초기화 실패)")
-                continue
             master = m_info['master']
             d_id = m_info['config']['id']
+            port_name = m_info['config']['port']
+            
             try:
-                master.execute(d_id, cst.READ_HOLDING_REGISTERS,
-                                REG_OFFLINE_TIME, quantity_of_x=1)
-                self.get_logger().info(f"[{port_name}] ID:{d_id} 연결 정상")
+                # 간단한 레지스터 읽기 시도로 연결 및 ID 확인
+                response = master.execute(d_id, cst.READ_HOLDING_REGISTERS, 0x2000, quantity_of_x=1)
+                self.get_logger().info(f"[{port_name}] ID:{d_id} 연결 정상 (응답 수신 성공)")
+                
             except modbus_tk.modbus.ModbusTimeoutError:
-                self.get_logger().error(f"[{port_name}] 연결 실패 - Timeout (케이블/포트/baudrate 확인)")
+                self.get_logger().error(f"[{port_name}] 연결 실패 - 통신 문제 (Timeout): 케이블, 포트, baudrate 확인 필요")
             except modbus_tk.modbus.ModbusError as e:
-                self.get_logger().error(f"[{port_name}] 연결 실패 - Modbus 에러(ID 확인 필요): {e}")
+                if "illegal" in str(e).lower() or "function" in str(e).lower():
+                    self.get_logger().error(f"[{port_name}] 연결 실패 - ID 문제 가능성 높음 (Illegal Function/Data Address): 드라이버 ID({d_id}) 또는 레지스터 주소 확인")
+                else:
+                    self.get_logger().error(f"[{port_name}] 연결 실패 - Modbus 에러 (ID 또는 기타): {e}")
             except Exception as e:
-                self.get_logger().error(f"[{port_name}] 알 수 없는 오류: {e}")
+                self.get_logger().error(f"[{port_name}] 연결 확인 중 알 수 없는 오류: {e}")
 
     # =========================================================
-    # 안전 종료
+    # 안전 종료 로직
     # =========================================================
     def destroy_node(self):
-        self.get_logger().info("노드 종료: 모든 모터 정지")
+        self.get_logger().info("노드 종료: 모든 포트의 모터를 정지합니다.")
         for m_info in self.masters:
-            if m_info['master'] is None:
-                continue
-            master = m_info['master']
-            d_id = m_info['config']['id']
             try:
+                master = m_info['master']
+                d_id = m_info['config']['id']
+                
+                # 속도 0으로 만들고 모터 비활성화(0x07)
                 self.speed_mode_speed_set_sync(master, d_id, 0, 0)
-                self.control_word(master, d_id, CTRL_STOP)
-                master.close()
-            except Exception as e:
-                self.get_logger().error(f"종료 중 정지 실패: {e}")
+                self.control_word(master, d_id, 0x07)
+                master.close() # 시리얼 포트 닫기
+            except:
+                pass
         super().destroy_node()
-
 
 def main(args=None):
     rclpy.init(args=args)
     node = MotorDriverNode()
+
+    # 노드 시작 시 한 번 연결 확인 수행
     node.check_motor_connection()
+
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
@@ -361,7 +235,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
