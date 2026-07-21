@@ -35,6 +35,7 @@ setup(
     entry_points={
         'console_scripts': [
             'teleop_node = four_wheel_robot.teleop_node:main',
+            'phone_teleop_node = four_wheel_robot.phone_teleop_node:main',
             'kinematics_node = four_wheel_robot.kinematics_node:main',
             'motor_driver_node = four_wheel_robot.motor_driver_node:main',
             'steering_driver_node = four_wheel_robot.steering_driver_node:main',

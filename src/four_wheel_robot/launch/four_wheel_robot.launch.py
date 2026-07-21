@@ -20,16 +20,19 @@ from launch_ros.actions import Node
 # 두 노드에 동시에 같은 값을 넘겨 값이 어긋날 가능성 자체를 없앴습니다.
 # ⚠️ 실제 주행 전 ZLAC8015D + 감속기 + 바퀴 규격에 맞는 안전한 최대 rpm인지 반드시 확인하세요.
 # =====================================================================================
-MAX_WHEEL_RPM = 100.0
+MAX_WHEEL_RPM = 50.0
 
 def generate_launch_description():
+
     return LaunchDescription([
-        
-        # Teleop Node (키보드 GUI)
+
+
+
+        # Teleop Node (조이스틱 GUI)
         Node(
             package='four_wheel_robot',
-            executable='teleop_node',
-            name='teleop_node',
+            executable='phone_teleop_node',
+            name='phone_teleop_node',
             output='screen',
             parameters=[
                 {'max_linear_speed': 1.0},
@@ -37,8 +40,29 @@ def generate_launch_description():
                 {'linear_accel': 1.0},
                 {'angular_accel': 1.0},
                 {'publish_rate': 50.0},
+                # [추가] 네트워크(ping) 워치독용 원격 호스트 IP 및 관련 설정
+                {'remote_host_ip': '100.107.95.7'},
+                {'ping_interval': 1.0},
+                {'ping_timeout': 0.5},
+                {'ping_fail_threshold': 1},
             ]
         ),
+
+
+        # Teleop Node (키보드 GUI)
+        # Node(
+        #     package='four_wheel_robot',
+        #     executable='teleop_node',
+        #     name='teleop_node',
+        #     output='screen',
+        #     parameters=[
+        #         {'max_linear_speed': 1.0},
+        #         {'max_angular_speed': 1.0},
+        #         {'linear_accel': 1.0},
+        #         {'angular_accel': 1.0},
+        #         {'publish_rate': 50.0},
+        #     ]
+        # ),
 
         # Kinematics Node
         Node(

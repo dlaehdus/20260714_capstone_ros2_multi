@@ -7,6 +7,7 @@
 # ROS통신 관련 라이브러리
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
 from std_msgs.msg import Float32MultiArray, Int32
 
 # 모터 통신관련 라이브러리
@@ -63,12 +64,19 @@ class MotorDriverNode(Node):
             except Exception as e:
                 self.get_logger().error(f"포트 연결 실패 [{port_name}]: {e}")
 
+        # [수정] wheel_speeds도 최신 값만 중요한 스트리밍 토픽이므로 depth=1 QoS 적용
+        stream_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+
         # Subcriber: kinematics_node에서 발행하는 [속도1, 속도2, ...] 배열 수신
         self.subscription = self.create_subscription(
             Float32MultiArray,
             'wheel_speeds', 
             self.speed_callback,
-            10
+            stream_qos
         )
         self.safety_subscription = self.create_subscription(
             Int32,
